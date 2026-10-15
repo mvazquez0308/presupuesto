@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Presupuesto</title>
+<style>
+:root{--bg:#EDF0F3;--surface:#fff;--ink:#16202A;--muted:#5A6673;--line:#D8DEE4;--accent:#2446A8;--accent-ink:#fff;--neg:#B42318;--neg-soft:#FBE9E7}
+@media (prefers-color-scheme:dark){:root{--bg:#0E141A;--surface:#161F28;--ink:#E5EBF1;--muted:#9AA8B6;--line:#2A3643;--accent:#8EA7F2;--accent-ink:#0E141A;--neg:#F2837A;--neg-soft:#3A1F1E}}
+*{box-sizing:border-box}
+html,body{background:var(--bg);color:var(--ink);margin:0;font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+.wrap{max-width:420px;margin:0 auto;padding:48px 16px}
+h1{font-size:19px;margin:0 0 6px}
+p{color:var(--muted);margin:0 0 18px;font-size:14px}
+form{background:var(--surface);border-radius:14px;padding:18px;display:grid;gap:14px;box-shadow:0 1px 2px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.08)}
+label{display:grid;gap:5px;font-size:13px;font-weight:500;color:var(--muted)}
+input{font:inherit;color:inherit;background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:10px 11px;width:100%}
+button{font:inherit;font-weight:600;border:0;border-radius:9px;padding:11px;background:var(--accent);color:var(--accent-ink);cursor:pointer}
+button:disabled{opacity:.6}
+.err{background:var(--neg-soft);color:var(--neg);border-radius:9px;padding:9px 11px;font-size:14px}
+.status{text-align:center;color:var(--muted);padding:80px 16px}
+</style>
+</head>
+<body>
+<div id="root"><div class="status">Cargando…</div></div>
+<script>
+(function(){
+'use strict';
+var KEY='pm-gh', CACHE='pm-gh-cache';
+var root=document.getElementById('root');
+
+function readSettings(){try{return JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){return null;}}
+function saveSettings(s){try{localStorage.setItem(KEY,JSON.stringify(s));}catch(e){}}
+function clearSettings(){try{localStorage.removeItem(KEY);localStorage.removeItem(CACHE);localStorage.removeItem('pm-gh-app');}catch(e){}}
+function readCache(s){try{var c=JSON.parse(localStorage.getItem(CACHE)||'null');return c&&c.owner===s.owner&&c.repo===s.repo?c:null;}catch(e){return null;}}
+function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+
+function b64ToText(b64){var bin=atob(String(b64).replace(/\s/g,''));var bytes=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return new TextDecoder('utf-8').decode(bytes);}
+
+function api(s,path,opts){
+  opts=opts||{};
+  return fetch('https://api.github.com/repos/'+encodeURIComponent(s.owner)+'/'+encodeURIComponent(s.repo)+'/'+path,{
+    method:opts.method||'GET',cache:'no-store',
+    headers:Object.assign({'Authorization':'Bearer '+s.token,'Accept':opts.accept||'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},opts.body?{'Content-Type':'application/json'}:{}),
+    body:opts.body?JSON.stringify(opts.body):undefined
+  });
+}
+function httpErr(r,what){var e=new Error(what+' ('+r.status+')');e.status=r.status;return e;}
+
+async function loadData(s){
+  var r=await api(s,'contents/data.json');
+  if(!r.ok)throw httpErr(r,'data.json');
+  var j=await r.json(),text;
+  if(j.encoding==='base64'&&j.content)text=b64ToText(j.content);
+  else{var b=await api(s,'git/blobs/'+j.sha);if(!b.ok)throw httpErr(b,'data.json');var bj=await b.json();text=b64ToText(bj.content);}
+  return {sha:j.sha,data:JSON.parse(text)};
+}
+async function loadApp(s){
+  var r=await api(s,'contents/app.html',{accept:'application/vnd.github.raw+json'});
+  if(!r.ok)throw httpErr(r,'app.html');
+  return await r.text();
+}
+
+function showSetup(msg,prev){
+  prev=prev||{};
+  root.innerHTML='<div class="wrap"><h1>Presupuesto</h1><p>Conecta este dispositivo con tu repositorio privado de datos. Se pide una sola vez por dispositivo.</p>'+
+  '<form id="f">'+(msg?'<div class="err">'+esc(msg)+'</div>':'')+
+  '<label>Usuario de GitHub<input id="owner" autocomplete="username" autocapitalize="off" spellcheck="false" required value="'+esc(prev.owner)+'"></label>'+
+  '<label>Repositorio de datos<input id="repo" autocapitalize="off" spellcheck="false" required value="'+esc(prev.repo||'presupuesto-datos')+'"></label>'+
+  '<label>Clave (token)<input id="token" type="password" autocomplete="current-password" spellcheck="false" required value="'+esc(prev.token)+'"></label>'+
+  '<button id="go">Entrar</button></form></div>';
+  document.getElementById('f').addEventListener('submit',async function(ev){
+    ev.preventDefault();
+    var s={owner:document.getElementById('owner').value.trim(),repo:document.getElementById('repo').value.trim(),token:document.getElementById('token').value.trim()};
+    var b=document.getElementById('go');b.disabled=true;b.textContent='Conectando…';
+    try{var res=await Promise.all([loadApp(s),loadData(s)]);saveSettings(s);start(s,res[0],res[1],false);}
+    catch(e){showSetup(explain(e),s);}
+  });
+}
+function explain(e){
+  if(e&&(e.status===401))return 'La clave no es válida o ya venció. Crea una nueva en GitHub y pégala aquí.';
+  if(e&&(e.status===403))return 'La clave no tiene permiso para ese repositorio. Revisa que tenga acceso a él con permiso de contenido.';
+  if(e&&e.status===404)return 'No encontré el repositorio o los archivos app.html y data.json. Revisa el usuario y el nombre del repositorio.';
+  if(e&&e.status)return 'GitHub respondió con un error ('+e.status+'). Intenta de nuevo.';
+  return 'No pude conectarme. Revisa tu conexión a internet.';
+}
+
+/* ---------- capa de datos (se inyecta dentro de la página) ---------- */
+function pmShim(init){
+  'use strict';
+  var S={owner:init.owner,repo:init.repo,token:init.token};
+  var URL_DATA='https://api.github.com/repos/'+encodeURIComponent(S.owner)+'/'+encodeURIComponent(S.repo)+'/contents/data.json';
+  var CACHE='pm-gh-cache';
+  function clone(x){return x===undefined?undefined:JSON.parse(JSON.stringify(x));}
+  function isObj(x){return x!==null&&typeof x==='object'&&!Array.isArray(x);}
+  function merge(t,src){
+    var out=isObj(t)?clone(t):{};
+    Object.keys(src).forEach(function(k){var v=src[k];
+      if(v===undefined)return;
+      if(isObj(v)&&v.__delete__===true){delete out[k];return;}
+      if(isObj(v)&&isObj(out[k]))out[k]=merge(out[k],v);
+      else out[k]=clean(v);});
+    return out;
+  }
+  function clean(v){if(isObj(v)){var o={};Object.keys(v).forEach(function(k){var x=v[k];if(x===undefined)return;if(isObj(x)&&x.__delete__===true)return;o[k]=clean(x);});return o;}return clone(v);}
+  function norm(d){d=isObj(d)?d:{};['items','pagos','cierres','config'].forEach(function(c){if(!isObj(d[c]))d[c]={};});return d;}
+  function err(code,msg){var e=new Error(msg||code);e.code=code;return e;}
+  function textToB64(t){var bytes=new TextEncoder().encode(t),s='';for(var i=0;i<bytes.length;i+=0x8000)s+=String.fromCharCode.apply(null,bytes.subarray(i,i+0x8000));return btoa(s);}
+  function b64ToText(b64){var bin=atob(String(b64).replace(/\s/g,''));var bytes=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);return new TextDecoder('utf-8').decode(bytes);}
+  function hdr(extra){return Object.assign({'Authorization':'Bearer '+S.token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},extra||{});}
+
+  var confirmed=norm(init.data), sha=init.sha, offline=!!init.offline;
+  var pending=[], inflight=false, timer=null, subs=[], lastWrite=0;
+  var local=clone(confirmed);
+
+  function saveCache(){try{localStorage.setItem(CACHE,JSON.stringify({owner:S.owner,repo:S.repo,sha:sha,data:confirmed,t:Date.now()}));}catch(e){}}
+  saveCache();
+
+  function rebuild(){var st=clone(confirmed);pending.forEach(function(p){try{p.op(st);}catch(e){}});local=st;emit();}
+  function emit(){subs.slice().forEach(fire);}
+  function fire(sub){
+    try{
+      if(sub.t==='doc'){var col=local[sub.c]||{},has=Object.prototype.hasOwnProperty.call(col,sub.id);
+        sub.cb({id:sub.id,exists:has,data:function(){return has?clone(col[sub.id]):undefined;}});}
+      else{var c=local[sub.c]||{};var docs=Object.keys(c).map(function(id){return{id:id,exists:true,data:function(){return clone(c[id]);}};});
+        sub.cb({docs:docs,size:docs.length,empty:!docs.length,forEach:function(f){docs.forEach(f);}});}
+    }catch(e){setTimeout(function(){throw e;});}
+  }
+  function split(path){var p=String(path).split('/');if(p.length!==2||!p[0]||!p[1])throw err('invalid_path','Ruta no soportada: '+path);return p;}
+
+  function enqueue(op){
+    return new Promise(function(resolve,reject){
+      var probe=clone(local);
+      try{op(probe);}catch(e){reject(e);return;}
+      pending.push({op:op,resolve:resolve,reject:reject});
+      local=probe;emit();
+      clearTimeout(timer);timer=setTimeout(flush,350);
+    });
+  }
+
+  async function fetchRemote(){
+    var r=await fetch(URL_DATA,{cache:'no-store',headers:hdr()});
+    if(!r.ok)throw err(r.status===401||r.status===403?'unauthenticated':'unavailable','GET '+r.status);
+    var j=await r.json(),text;
+    if(j.encoding==='base64'&&j.content)text=b64ToText(j.content);
+    else{var b=await fetch(URL_DATA.replace(/contents\/data\.json$/,'git/blobs/'+j.sha),{cache:'no-store',headers:hdr()});if(!b.ok)throw err('unavailable','BLOB '+b.status);text=b64ToText((await b.json()).content);}
+    return{sha:j.sha,data:norm(JSON.parse(text))};
+  }
+
+  async function flush(){
+    if(inflight||!pending.length)return;
+    inflight=true;
+    var batch=pending.slice(), attempt=0, lastErr=null, done=false;
+    while(!done&&attempt<4){
+      attempt++;
+      var next=clone(confirmed),applied=[],failed=[];
+      batch.forEach(function(p){try{p.op(next);applied.push(p);}catch(e){failed.push([p,e]);}});
+      try{
+        var r=await fetch(URL_DATA,{method:'PUT',cache:'no-store',headers:hdr({'Content-Type':'application/json'}),
+          body:JSON.stringify({message:'Presupuesto: '+applied.length+(applied.length===1?' cambio':' cambios'),content:textToB64(JSON.stringify(next,null,1)+'\n'),sha:sha})});
+        if(r.ok){var j=await r.json();lastWrite=Date.now();confirmed=next;sha=j.content&&j.content.sha||sha;offline=false;banner('');saveCache();
+          pending=pending.filter(function(p){return batch.indexOf(p)<0;});
+          applied.forEach(function(p){p.resolve();});failed.forEach(function(f){f[0].reject(f[1]);});done=true;break;}
+        if(r.status===409||r.status===422){var rem=await fetchRemote();confirmed=rem.data;sha=rem.sha;continue;}
+        if(r.status===401||r.status===403){lastErr=err('unauthenticated');banner('La clave de GitHub no es válida o venció. Abre la página con ?reset al final del enlace para ingresar una nueva.');break;}
+        lastErr=err('unavailable','PUT '+r.status);break;
+      }catch(e){lastErr=e&&e.code?e:err('unavailable',String(e&&e.message||e));if(lastErr.code==='unauthenticated')banner('La clave de GitHub no es válida o venció. Abre la página con ?reset al final del enlace para ingresar una nueva.');break;}
+    }
+    if(!done){
+      if(!lastErr)lastErr=err('unavailable','Conflicto repetido');
+      pending=pending.filter(function(p){return batch.indexOf(p)<0;});
+      batch.forEach(function(p){p.reject(lastErr);});
+      if(lastErr.code==='unavailable'&&!navigator.onLine)banner('Sin conexión: los cambios no se guardaron.');
+    }
+    inflight=false;rebuild();
+    if(pending.length){clearTimeout(timer);timer=setTimeout(flush,50);}
+  }
+
+  async function refresh(){
+    if(inflight||pending.length||Date.now()-lastWrite<15000)return;
+    try{var rem=await fetchRemote();if(inflight||pending.length||Date.now()-lastWrite<15000)return;
+      offline=false;banner('');
+      if(rem.sha!==sha){confirmed=rem.data;sha=rem.sha;saveCache();rebuild();}}catch(e){}
+  }
+  document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')refresh();});
+  window.addEventListener('online',refresh);
+  setInterval(function(){if(document.visibilityState==='visible')refresh();},120000);
+
+  function banner(msg){
+    var b=document.getElementById('pm-gh-banner');
+    if(!msg){if(b)b.remove();return;}
+    if(!b){b=document.createElement('div');b.id='pm-gh-banner';b.setAttribute('role','status');
+      b.style.cssText='position:fixed;left:0;right:0;top:0;z-index:99;padding:8px 14px;padding-top:calc(8px + env(safe-area-inset-top,0px));font:13px/1.35 system-ui,sans-serif;background:#9A5800;color:#fff;text-align:center';
+      (document.body||document.documentElement).appendChild(b);}
+    b.textContent=msg;
+  }
+  if(offline){var iv=setInterval(function(){if(document.body){clearInterval(iv);if(offline)banner('Sin conexión: estás viendo la última copia guardada en este dispositivo.');}},50);}
+
+  var db={
+    doc:function(path){var p=split(path),c=p[0],id=p[1];return{
+      id:id,
+      set:function(d){return enqueue(function(st){(st[c]||(st[c]={}))[id]=clean(d||{});});},
+      update:function(d){return enqueue(function(st){var col=st[c]||(st[c]={});if(!Object.prototype.hasOwnProperty.call(col,id))throw err('not_found','No existe '+path);col[id]=merge(col[id],d||{});});},
+      delete:function(){return enqueue(function(st){if(st[c])delete st[c][id];});},
+      get:function(){return Promise.resolve().then(function(){var col=local[c]||{},has=Object.prototype.hasOwnProperty.call(col,id);return{id:id,exists:has,data:function(){return has?clone(col[id]):undefined;}};});},
+      onSnapshot:function(cb){var sub={t:'doc',c:c,id:id,cb:cb};subs.push(sub);Promise.resolve().then(function(){if(subs.indexOf(sub)>=0)fire(sub);});return function(){var i=subs.indexOf(sub);if(i>=0)subs.splice(i,1);};}
+    };},
+    collection:function(c){return{
+      doc:function(id){return db.doc(c+'/'+id);},
+      get:function(){return Promise.resolve().then(function(){var col=local[c]||{};var docs=Object.keys(col).map(function(id){return{id:id,exists:true,data:function(){return clone(col[id]);}};});return{docs:docs,size:docs.length,empty:!docs.length,forEach:function(f){docs.forEach(f);}};});},
+      onSnapshot:function(cb){var sub={t:'col',c:c,cb:cb};subs.push(sub);Promise.resolve().then(function(){if(subs.indexOf(sub)>=0)fire(sub);});return function(){var i=subs.indexOf(sub);if(i>=0)subs.splice(i,1);};}
+    };}
+  };
+  window.claude={use:function(name){return Promise.resolve(name==='db'?db:null);}};
+}
+
+function start(s,appHtml,remote,offline){
+  var init={owner:s.owner,repo:s.repo,token:s.token,sha:remote.sha,data:remote.data,offline:!!offline};
+  var inject='<script>('+pmShim.toString()+')('+JSON.stringify(init).replace(/</g,'\\u003c')+');<\/script>';
+  var i=appHtml.search(/<head[^>]*>/i);
+  var html=i>=0?appHtml.replace(/<head[^>]*>/i,function(m){return m+inject;}):inject+appHtml;
+  document.open();document.write(html);document.close();
+}
+
+async function boot(){
+  var q=new URLSearchParams(location.search);
+  if(q.has('reset')){var old=readSettings();clearSettings();history.replaceState(null,'',location.pathname);showSetup('',old?{owner:old.owner,repo:old.repo}:{});return;}
+  var s=readSettings();
+  if(!s||!s.owner||!s.repo||!s.token){showSetup('');return;}
+  try{var res=await Promise.all([loadApp(s),loadData(s)]);start(s,res[0],res[1],false);}
+  catch(e){
+    if(!e.status){var c=readCache(s),appC=null;try{appC=localStorage.getItem('pm-gh-app');}catch(x){}
+      if(c&&appC){start(s,appC,{sha:c.sha,data:c.data},true);return;}}
+    showSetup(explain(e),{owner:s.owner,repo:s.repo});
+  }
+}
+var _loadApp=loadApp;loadApp=async function(s){var t=await _loadApp(s);try{localStorage.setItem('pm-gh-app',t);}catch(e){}return t;};
+boot();
+})();
+</script>
+</body>
+</html>
